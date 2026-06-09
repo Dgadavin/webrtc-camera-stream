@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MediaMTX Admin</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #0b0b0b; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
+
+  header {
+    padding: 12px 20px; background: #161616; border-bottom: 1px solid #2a2a2a;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  header h1 { font-size: 15px; font-weight: 500; }
+  .top-controls { display: flex; gap: 8px; align-items: center; }
+  .top-controls input {
+    background: #1a1a1a; color: #eee; border: 1px solid #3a3a3a;
+    padding: 6px 10px; border-radius: 4px; font-size: 13px; width: 220px;
+  }
+  .top-controls a {
+    background: #2a2a2a; color: #eee; border: 1px solid #3a3a3a;
+    padding: 6px 12px; border-radius: 4px; font-size: 13px; text-decoration: none;
+  }
+  .top-controls a:hover { background: #3a3a3a; }
+
+  main { max-width: 980px; margin: 24px auto; padding: 0 20px; }
+
+  section { margin-bottom: 28px; }
+  section h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
+    color: #888; margin-bottom: 10px;
+  }
+
+  .panel {
+    background: #161616; border: 1px solid #2a2a2a; border-radius: 6px;
+    padding: 16px;
+  }
+
+  .add-form {
+    display: grid; grid-template-columns: 1fr 2fr auto; gap: 10px; align-items: end;
+  }
+  .add-form .field label {
+    display: block; font-size: 11px; color: #888; margin-bottom: 4px;
+  }
+  .add-form input {
+    width: 100%; background: #0b0b0b; color: #eee; border: 1px solid #2a2a2a;
+    padding: 8px 10px; border-radius: 4px; font-size: 13px;
+  }
+  .add-form button {
+    background: #2ecc71; color: #0b0b0b; border: 0; font-weight: 600;
+    padding: 9px 18px; border-radius: 4px; cursor: pointer; font-size: 13px;
+  }
+  .add-form button:hover { background: #28b864; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td {
+    text-align: left; padding: 10px 12px; border-bottom: 1px solid #222;
+    font-size: 13px;
+  }
+  th { color: #888; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td.path-name { font-family: monospace; }
+
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 500;
+  }
+  .pill.live  { background: #14532d; color: #4ade80; }
+  .pill.idle  { background: #292929; color: #888; }
+  .pill.error { background: #532014; color: #f87171; }
+
+  td.actions { text-align: right; }
+  .btn {
+    background: #2a2a2a; color: #eee; border: 1px solid #3a3a3a;
+    padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 12px;
+    margin-left: 6px;
+  }
+  .btn:hover { background: #3a3a3a; }
+  .btn.danger { color: #f87171; border-color: #532014; }
+  .btn.danger:hover { background: #532014; color: #fca5a5; }
+
+  .empty { text-align: center; color: #666; padding: 30px; font-size: 13px; }
+
+  .toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: #161616; border: 1px solid #2a2a2a; border-radius: 6px;
+    padding: 12px 18px; font-size: 13px; max-width: 360px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    transform: translateX(400px); transition: transform 0.2s;
+  }
+  .toast.show { transform: translateX(0); }
+  .toast.error { border-color: #532014; }
+
+  .hint {
+    margin-top: 16px; padding: 12px 14px;
+    background: #161616; border-left: 3px solid #3a3a3a;
+    font-size: 12px; color: #aaa; line-height: 1.6; border-radius: 0 4px 4px 0;
+  }
+  .hint code {
+    background: #0b0b0b; padding: 1px 6px; border-radius: 3px;
+    font-family: monospace; color: #eee;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>MediaMTX Admin</h1>
+    <div class="top-controls">
+      <input id="apiOverride" placeholder="MediaMTX API (host:port)" title="Override MEDIAMTX_API for this browser. Blank = server default.">
+      <input id="whepOverride" placeholder="MediaMTX WHEP (host:port)" title="Override MEDIAMTX_WHEP for multiview links opened from this page. Blank = server default.">
+      <a id="openMultiview" href="/multiview" target="_blank">Open multiview ↗</a>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Add camera path</h2>
+      <div class="panel">
+        <div class="add-form">
+          <div class="field">
+            <label>Path name</label>
+            <input id="newName" placeholder="cam5">
+          </div>
+          <div class="field">
+            <label>Source</label>
+            <input id="newSource" value="publisher"
+              placeholder="publisher  (or rtsp://…, udp+mpegts://…)">
+          </div>
+          <button onclick="addPath()">Add</button>
+        </div>
+        <div class="hint">
+          For a Pi camera publishing to this server, use <code>publisher</code> and
+          run on the Pi:<br>
+          <code>rpicam-vid -t 0 --width 1280 --height 720 --framerate 30 --codec h264 --profile baseline --inline --intra 30 --libav-format rtsp -o rtsp://&lt;server&gt;:8554/&lt;path-name&gt;</code>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Configured paths</h2>
+      <div class="panel">
+        <table id="pathsTable">
+          <thead>
+            <tr>
+              <th>Path</th>
+              <th>Source</th>
+              <th>Status</th>
+              <th>Readers</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="pathsBody">
+            <tr><td colspan="5" class="empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const API_BASE = "/api/v3";
+const OVERRIDE_KEY = "mediamtxApiOverride";
+const WHEP_OVERRIDE_KEY = "mediamtxWhepOverride";
+
+function apiFetch(path, opts) {
+  const o = { ...(opts || {}) };
+  const override = localStorage.getItem(OVERRIDE_KEY);
+  if (override) o.headers = { ...(o.headers || {}), "X-MediaMTX-API": override };
+  return fetch(path, o);
+}
+
+function toast(msg, isError) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast show" + (isError ? " error" : "");
+  setTimeout(() => t.className = "toast", 3000);
+}
+
+/* ---------- API calls ---------- */
+async function listConfigured() {
+  const res = await apiFetch(`${API_BASE}/config/paths/list`);
+  if (!res.ok) throw new Error(`config/paths/list ${res.status}`);
+  const data = await res.json();
+  return data.items || [];
+}
+async function listActive() {
+  const res = await apiFetch(`${API_BASE}/paths/list`);
+  if (!res.ok) throw new Error(`paths/list ${res.status}`);
+  const data = await res.json();
+  return data.items || [];
+}
+async function addPath() {
+  const name = document.getElementById("newName").value.trim();
+  const source = document.getElementById("newSource").value.trim() || "publisher";
+  if (!name) { toast("Path name required", true); return; }
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    toast("Path name: letters, numbers, _ and - only", true); return;
+  }
+  try {
+    const res = await apiFetch(`${API_BASE}/config/paths/add/${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    toast(`Added '${name}'`);
+    document.getElementById("newName").value = "";
+    refresh();
+  } catch (err) {
+    toast(`Add failed: ${err.message}`, true);
+  }
+}
+async function deletePath(name) {
+  if (!confirm(`Delete path '${name}'?`)) return;
+  try {
+    const res = await apiFetch(`${API_BASE}/config/paths/delete/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw new Error(await res.text());
+    toast(`Deleted '${name}'`);
+    refresh();
+  } catch (err) {
+    toast(`Delete failed: ${err.message}`, true);
+  }
+}
+function multiviewUrl(extra) {
+  const qs = new URLSearchParams(extra || {});
+  const whepOv = localStorage.getItem(WHEP_OVERRIDE_KEY);
+  if (whepOv) qs.set("whep", whepOv);
+  const s = qs.toString();
+  return s ? `/multiview?${s}` : "/multiview";
+}
+function openStream(name) {
+  window.open(multiviewUrl({ cams: name }), "_blank");
+}
+
+/* ---------- Render ---------- */
+async function refresh() {
+  const body = document.getElementById("pathsBody");
+  try {
+    const [configured, active] = await Promise.all([listConfigured(), listActive()]);
+    const activeByName = Object.fromEntries(active.map(p => [p.name, p]));
+
+    if (configured.length === 0) {
+      body.innerHTML = `<tr><td colspan="5" class="empty">No paths configured. Add one above.</td></tr>`;
+      return;
+    }
+
+    body.innerHTML = configured.map(p => {
+      const a = activeByName[p.name];
+      const ready = a && a.ready;
+      const readers = a ? (a.readers ? a.readers.length : 0) : 0;
+      const statusPill = ready
+        ? `<span class="pill live">LIVE</span>`
+        : `<span class="pill idle">idle</span>`;
+      return `
+        <tr>
+          <td class="path-name">${p.name}</td>
+          <td>${p.source || "publisher"}</td>
+          <td>${statusPill}</td>
+          <td>${readers}</td>
+          <td class="actions">
+            <button class="btn" onclick="openStream('${p.name}')">View</button>
+            <button class="btn danger" onclick="deletePath('${p.name}')">Delete</button>
+          </td>
+        </tr>`;
+    }).join("");
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="5" class="empty">
+      Cannot reach MediaMTX via <code>${API_BASE}</code>.<br>
+      Make sure <code>api: yes</code> is set in mediamtx.yml and the
+      <code>MEDIAMTX_API</code> env var (or default <code>localhost:9997</code>) points at it.
+    </td></tr>`;
+  }
+}
+
+/* ---------- Override inputs ---------- */
+const HOSTPORT_RE = /^[a-zA-Z0-9.\-]+(:\d+)?$/;
+
+function bindOverride(inputId, key, label, onChange) {
+  const el = document.getElementById(inputId);
+  el.value = localStorage.getItem(key) || "";
+  el.addEventListener("change", () => {
+    const v = el.value.trim();
+    if (v && !HOSTPORT_RE.test(v)) {
+      toast(`${label} override must be host or host:port`, true);
+      return;
+    }
+    if (v) localStorage.setItem(key, v);
+    else localStorage.removeItem(key);
+    if (onChange) onChange();
+  });
+}
+
+bindOverride("apiOverride", OVERRIDE_KEY, "API", refresh);
+bindOverride("whepOverride", WHEP_OVERRIDE_KEY, "WHEP", updateMultiviewLink);
+
+function updateMultiviewLink() {
+  document.getElementById("openMultiview").href = multiviewUrl();
+}
+updateMultiviewLink();
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "paths": [
+    { "name": "cam1", "source": "publisher" },
+    { "name": "cam2", "source": "publisher" },
+    { "name": "cam3", "source": "publisher" },
+    { "name": "cam4", "source": "publisher" }
+  ]
+}

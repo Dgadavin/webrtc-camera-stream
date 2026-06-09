@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Camera Multiview</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #0b0b0b; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; }
+
+  header {
+    padding: 10px 16px; background: #161616; border-bottom: 1px solid #2a2a2a;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  header h1 { font-size: 14px; font-weight: 500; letter-spacing: 0.5px; }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  .controls button, .controls a {
+    background: #2a2a2a; color: #eee; border: 1px solid #3a3a3a;
+    padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
+    text-decoration: none;
+  }
+  .controls button:hover, .controls a:hover { background: #3a3a3a; }
+  .controls input {
+    background: #1a1a1a; color: #eee; border: 1px solid #3a3a3a;
+    padding: 5px 8px; border-radius: 4px; font-size: 12px; width: 240px;
+  }
+
+  .grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 2px;
+    background: #000;
+    overflow: hidden;
+  }
+  .grid.focus { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+  .grid.focus .cell { display: none; }
+  .grid.focus .cell.focused { display: block; }
+
+  .cell { position: relative; background: #000; overflow: hidden; cursor: pointer; }
+  .cell video {
+    width: 100%; height: 100%; object-fit: contain; background: #000; display: block;
+  }
+  .label {
+    position: absolute; top: 8px; left: 8px;
+    background: rgba(0,0,0,0.65); padding: 4px 10px; border-radius: 3px;
+    font-size: 12px; pointer-events: none;
+  }
+  .stats {
+    position: absolute; bottom: 8px; left: 8px;
+    background: rgba(0,0,0,0.65); padding: 4px 10px; border-radius: 3px;
+    font-size: 11px; font-family: monospace; pointer-events: none;
+    line-height: 1.4; white-space: pre;
+  }
+  .status {
+    position: absolute; top: 8px; right: 8px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #666; box-shadow: 0 0 6px rgba(0,0,0,0.7);
+  }
+  .status.connecting { background: #d4a017; animation: pulse 1s infinite; }
+  .status.connected  { background: #2ecc71; }
+  .status.failed     { background: #e74c3c; }
+  @keyframes pulse { 50% { opacity: 0.4; } }
+
+  .placeholder {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #666; font-size: 13px; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Camera Multiview</h1>
+    <div class="controls">
+      <button onclick="connectAll()">Reconnect</button>
+      <button onclick="toggleStats()">Stats</button>
+      <button onclick="toggleFullscreen()">Fullscreen</button>
+    </div>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+<script>
+/* =========================================================
+   CONFIG — edit this list, or pass ?cams=cam1,cam2,cam3,cam4
+   in the URL to override.
+   ========================================================= */
+let cameras = [
+  { name: "Camera 1", path: "cam1" },
+  { name: "Camera 2", path: "cam2" },
+  { name: "Camera 3", path: "cam3" },
+  { name: "Camera 4", path: "cam4" },
+];
+
+const urlParams = new URLSearchParams(location.search);
+if (urlParams.has("cams")) {
+  cameras = urlParams.get("cams").split(",").map((p, i) => ({
+    name: `Camera ${i+1}`, path: p.trim(),
+  }));
+}
+
+/* Override WHEP target host. URL param wins and is persisted; otherwise
+   fall back to the last-used value. Empty string = use server default. */
+const WHEP_OVERRIDE_KEY = "mediamtxWhepOverride";
+if (urlParams.has("whep")) {
+  const v = urlParams.get("whep").trim();
+  if (v) localStorage.setItem(WHEP_OVERRIDE_KEY, v);
+  else localStorage.removeItem(WHEP_OVERRIDE_KEY);
+}
+const whepOverride = localStorage.getItem(WHEP_OVERRIDE_KEY) || "";
+
+/* Constants used by the ~e2e latency estimate in the stats overlay.
+   Override the SRT buffer with ?srt=<ms> if your publisher uses a different
+   value (pi-publish.sh sets it via the SRT URL's latency= parameter). */
+const SRT_BUFFER_MS = Number(urlParams.get("srt")) || 120;
+const ENCODER_MS    = 20;  // rpicam-vid HW encoder, rough
+const DISPLAY_MS    = 16;  // ~one frame at 60Hz monitor refresh
+
+const grid = document.getElementById("grid");
+const cells = [];
+let statsVisible = true;
+
+/* ---------- WHEP client ----------
+   Post an SDP offer to /<path>/whep, get back an answer.
+*/
+async function startWhep(cell) {
+  const { cam, video, statusEl } = cell;
+  statusEl.className = "status connecting";
+
+  if (cell.pc) { try { cell.pc.close(); } catch(_){} cell.pc = null; }
+
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    bundlePolicy: "max-bundle",
+  });
+  cell.pc = pc;
+
+  pc.addTransceiver("video", { direction: "recvonly" });
+
+  pc.ontrack = (ev) => {
+    if (video.srcObject !== ev.streams[0]) {
+      video.srcObject = ev.streams[0];
+      video.play().catch(()=>{});
+    }
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "connected") statusEl.className = "status connected";
+    else if (pc.connectionState === "failed" || pc.connectionState === "disconnected")
+      statusEl.className = "status failed";
+  };
+
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Wait for ICE gathering so we send a complete SDP
+    await new Promise(resolve => {
+      if (pc.iceGatheringState === "complete") return resolve();
+      const check = () => {
+        if (pc.iceGatheringState === "complete") {
+          pc.removeEventListener("icegatheringstatechange", check);
+          resolve();
+        }
+      };
+      pc.addEventListener("icegatheringstatechange", check);
+      setTimeout(resolve, 2000);
+    });
+
+    const whepUrl = `/whep/${encodeURIComponent(cam.path)}`;
+    const headers = { "Content-Type": "application/sdp" };
+    if (whepOverride) headers["X-MediaMTX-WHEP"] = whepOverride;
+    const res = await fetch(whepUrl, {
+      method: "POST",
+      headers,
+      body: pc.localDescription.sdp,
+    });
+    if (!res.ok) throw new Error(`WHEP ${res.status} ${await res.text()}`);
+    const answerSdp = await res.text();
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+
+    // Shrink the browser's playout buffer for lower glass-to-glass latency.
+    // playoutDelayHint=0 asks for minimal buffering; jitterBufferTarget sets
+    // the target jitter buffer to 50ms (Chrome default is ~200ms).
+    pc.getReceivers().forEach(r => {
+      try {
+        if ("playoutDelayHint" in r) r.playoutDelayHint = 0;
+        if ("jitterBufferTarget" in r) r.jitterBufferTarget = 50;
+      } catch(_) {}
+    });
+  } catch (err) {
+    console.error(`[${cam.path}]`, err);
+    statusEl.className = "status failed";
+  }
+}
+
+/* ---------- Stats overlay ----------
+   Latency numbers are all browser-side approximations — publisher-side
+   encoder/queue latency is invisible from here.
+     buf = avg time a frame spent in the jitter buffer before decode
+     dec = avg decode time per frame
+     rtt = round-trip time to the WHEP server (nominated ICE pair)
+*/
+function fmtMs(v, unknown = "—") {
+  return v == null || Number.isNaN(v) ? unknown : `${v.toFixed(0)}ms`;
+}
+
+async function pollStats(cell) {
+  if (!cell.pc) return;
+  try {
+    const stats = await cell.pc.getStats();
+    let bitrate = 0, fps = 0, packetsLost = 0, jitter = 0, width = 0, height = 0;
+    let bufMs = null, decMs = null, rttMs = null;
+
+    stats.forEach(r => {
+      if (r.type === "inbound-rtp" && r.kind === "video") {
+        if (cell.lastBytes != null && cell.lastTs != null) {
+          const dt = (r.timestamp - cell.lastTs) / 1000;
+          if (dt > 0) bitrate = ((r.bytesReceived - cell.lastBytes) * 8 / dt) / 1000;
+        }
+
+        // Per-frame averages — diff against the previous sample so the
+        // numbers reflect "current" latency, not the lifetime average.
+        if (r.jitterBufferDelay != null && r.jitterBufferEmittedCount != null
+            && cell.lastJBDelay != null) {
+          const dCount = r.jitterBufferEmittedCount - cell.lastJBCount;
+          if (dCount > 0) bufMs = ((r.jitterBufferDelay - cell.lastJBDelay) / dCount) * 1000;
+        }
+        if (r.totalDecodeTime != null && r.framesDecoded != null
+            && cell.lastDecTime != null) {
+          const dFrames = r.framesDecoded - cell.lastDecFrames;
+          if (dFrames > 0) decMs = ((r.totalDecodeTime - cell.lastDecTime) / dFrames) * 1000;
+        }
+
+        cell.lastBytes = r.bytesReceived;
+        cell.lastTs = r.timestamp;
+        cell.lastJBDelay = r.jitterBufferDelay;
+        cell.lastJBCount = r.jitterBufferEmittedCount;
+        cell.lastDecTime = r.totalDecodeTime;
+        cell.lastDecFrames = r.framesDecoded;
+
+        fps = r.framesPerSecond || 0;
+        packetsLost = r.packetsLost || 0;
+        jitter = (r.jitter || 0) * 1000;
+        width = r.frameWidth || 0;
+        height = r.frameHeight || 0;
+      }
+      if (r.type === "candidate-pair" && r.nominated && r.currentRoundTripTime != null) {
+        rttMs = r.currentRoundTripTime * 1000;
+      }
+    });
+
+    // ~e2e = rough glass-to-glass estimate. Sums what we can measure
+    // (rtt/2 one-way, jitter buffer, decode, display refresh) plus fixed
+    // guesses for the parts we can't see (encoder + SRT buffer). Trends
+    // correctly when you change a knob; absolute number is ±50ms.
+    let e2eMs = null;
+    if (rttMs != null && bufMs != null && decMs != null) {
+      e2eMs = rttMs / 2 + bufMs + decMs + DISPLAY_MS + SRT_BUFFER_MS + ENCODER_MS;
+    }
+
+    cell.statsEl.textContent =
+      `${width}×${height} @ ${fps.toFixed(0)} fps\n` +
+      `${bitrate.toFixed(0)} kbps · jitter ${jitter.toFixed(1)}ms · lost ${packetsLost}\n` +
+      `buf ${fmtMs(bufMs)} · dec ${fmtMs(decMs)} · rtt ${fmtMs(rttMs)}\n` +
+      `~e2e ${fmtMs(e2eMs)}`;
+  } catch(_) {}
+}
+
+/* ---------- Grid setup ---------- */
+function buildGrid() {
+  grid.innerHTML = "";
+  cells.length = 0;
+  cameras.forEach((cam, idx) => {
+    const cell = document.createElement("div");
+    cell.className = "cell";
+    cell.innerHTML = `
+      <video autoplay playsinline muted></video>
+      <div class="placeholder">waiting for ${cam.path}…</div>
+      <div class="label">${cam.name}</div>
+      <div class="stats"></div>
+      <div class="status"></div>
+    `;
+    grid.appendChild(cell);
+
+    const cellObj = {
+      cam,
+      el: cell,
+      video: cell.querySelector("video"),
+      statsEl: cell.querySelector(".stats"),
+      statusEl: cell.querySelector(".status"),
+      placeholder: cell.querySelector(".placeholder"),
+      pc: null,
+    };
+    cells.push(cellObj);
+
+    cell.addEventListener("click", () => toggleFocus(idx));
+    cellObj.video.addEventListener("loadeddata", () => {
+      cellObj.placeholder.style.display = "none";
+    });
+  });
+}
+
+function connectAll() {
+  cells.forEach(cell => {
+    if (cell.statsTimer) clearInterval(cell.statsTimer);
+    startWhep(cell);
+    cell.statsTimer = setInterval(() => pollStats(cell), 1000);
+  });
+}
+
+function toggleFocus(idx) {
+  const cell = cells[idx].el;
+  if (cell.classList.contains("focused")) {
+    cell.classList.remove("focused");
+    grid.classList.remove("focus");
+  } else {
+    cells.forEach(c => c.el.classList.remove("focused"));
+    cell.classList.add("focused");
+    grid.classList.add("focus");
+  }
+}
+function toggleStats() {
+  statsVisible = !statsVisible;
+  document.querySelectorAll(".stats").forEach(s => s.style.display = statsVisible ? "" : "none");
+}
+function toggleFullscreen() {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+  else document.exitFullscreen();
+}
+
+buildGrid();
+setTimeout(connectAll, 100);
+</script>
+</body>
+</html>

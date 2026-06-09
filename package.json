@@ -1,0 +1,13 @@
+{
+  "name": "mediamtx-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Admin + multiview web UI for a MediaMTX server. Zero-dependency Node server that also reverse-proxies the MediaMTX control API and WHEP endpoint.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
